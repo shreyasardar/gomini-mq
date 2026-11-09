@@ -23,3 +23,7 @@ func NewTopic(name string, logFilename string) (*Topic, error) {
 		Log:   log,
 	}, nil
 }
+
+func (t *Topic) Close() error {
+	return t.Log.Close()
+}

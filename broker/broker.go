@@ -1,6 +1,8 @@
 package broker
 
 import (
+	"errors"
+	"fmt"
 	"gominimq/models"
 	"gominimq/topic"
 	"path/filepath"
@@ -8,40 +10,53 @@ import (
 )
 
 type Broker struct {
-	Topics  map[string]*topic.Topic
-	NextID  int64
-	DataDir string
-	mu      sync.Mutex
+	topics      map[string]*topic.Topic
+	nextID      int64
+	dataDir     string
+	mu          sync.RWMutex
+	closed      bool
+	lifecycleMu sync.RWMutex
 }
 
 func NewBroker(dataDir string) *Broker {
 	return &Broker{
-		Topics:  make(map[string]*topic.Topic),
-		NextID:  1,
-		DataDir: dataDir,
+		topics:  make(map[string]*topic.Topic),
+		nextID:  1,
+		dataDir: dataDir,
 	}
 }
 
 func (b *Broker) CreateTopic(name string) error {
-	if _, exists := b.Topics[name]; exists {
+	b.lifecycleMu.RLock()
+	defer b.lifecycleMu.RUnlock()
+
+	if b.closed {
+		return fmt.Errorf("broker is closed")
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if _, exists := b.topics[name]; exists {
 		return nil
 	}
 
-	logFilename := filepath.Join(b.DataDir, name+".log")
+	logFilename := filepath.Join(b.dataDir, name+".log")
 
 	t, err := topic.NewTopic(name, logFilename)
 	if err != nil {
 		return err
 	}
 
-	b.Topics[name] = t
-
+	b.topics[name] = t
 	return nil
 }
 
 func (b *Broker) GetTopic(name string) (*topic.Topic, bool) {
-	t, exists := b.Topics[name]
+	b.mu.RLock()
+	defer b.mu.RUnlock()
 
+	t, exists := b.topics[name]
 	if !exists {
 		return nil, false
 	}
@@ -50,35 +65,67 @@ func (b *Broker) GetTopic(name string) (*topic.Topic, bool) {
 }
 
 func (b *Broker) Publish(topicName string, msg models.Message) bool {
-	topic, ok := b.GetTopic(topicName)
+	b.lifecycleMu.RLock()
+	defer b.lifecycleMu.RUnlock()
 
+	if b.closed {
+		return false
+	}
+
+	t, ok := b.GetTopic(topicName)
 	if !ok {
 		return false
 	}
 
 	b.mu.Lock()
-
-	msg.ID = b.NextID
-	b.NextID++
-
+	msg.ID = b.nextID
+	b.nextID++
 	b.mu.Unlock()
 
-	err := topic.Log.Append(msg)
-	if err != nil {
+	if err := t.Log.Append(msg); err != nil {
 		return false
 	}
 
-	topic.Queue.Enqueue(msg)
-
+	t.Queue.Enqueue(msg)
 	return true
 }
 
 func (b *Broker) Consume(topicName string) *models.Message {
-	topic, ok := b.GetTopic(topicName)
+	b.lifecycleMu.RLock()
+	defer b.lifecycleMu.RUnlock()
 
+	if b.closed {
+		return nil
+	}
+
+	t, ok := b.GetTopic(topicName)
 	if !ok {
 		return nil
 	}
 
-	return topic.Queue.Dequeue()
+	return t.Queue.Dequeue()
+}
+
+func (b *Broker) Close() error {
+	b.lifecycleMu.Lock()
+	defer b.lifecycleMu.Unlock()
+
+	if b.closed {
+		return nil
+	}
+
+	b.closed = true
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	var closeErr error
+
+	for _, t := range b.topics {
+		if err := t.Close(); err != nil {
+			closeErr = errors.Join(closeErr, err)
+		}
+	}
+
+	return closeErr
 }

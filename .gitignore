@@ -1,1 +1,4 @@
 *.exe
+
+# Runtime message logs
+data/

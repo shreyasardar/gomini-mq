@@ -10,8 +10,9 @@ import (
 )
 
 type Log struct {
-	file *os.File
-	mu   sync.Mutex
+	file   *os.File
+	mu     sync.Mutex
+	closed bool
 }
 
 func NewLog(filename string) (*Log, error) {
@@ -41,6 +42,10 @@ func (l *Log) Append(msg models.Message) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
+	if l.closed {
+		return os.ErrClosed
+	}
+
 	data, err := json.Marshal(msg)
 	if err != nil {
 		return err
@@ -56,6 +61,10 @@ func (l *Log) Append(msg models.Message) error {
 func (l *Log) ReadAll() ([]models.Message, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+
+	if l.closed {
+		return nil, os.ErrClosed
+	}
 
 	file, err := os.Open(l.file.Name())
 	if err != nil {
@@ -86,5 +95,14 @@ func (l *Log) ReadAll() ([]models.Message, error) {
 }
 
 func (l *Log) Close() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if l.closed {
+		return nil
+	}
+
+	l.closed = true
+
 	return l.file.Close()
 }
