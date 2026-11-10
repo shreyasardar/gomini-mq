@@ -1,71 +1,81 @@
 package broker
 
 import (
+	"fmt"
 	"gominimq/models"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
 
 func TestPublishThroughput(t *testing.T) {
-	dataDir := t.TempDir()
-
-	broker := NewBroker(dataDir)
-
-	err := broker.CreateTopic("benchmark")
-	if err != nil {
-		t.Fatalf("failed to create topic: %v", err)
-	}
-
-	topic, ok := broker.GetTopic("benchmark")
-	if !ok {
-		t.Fatal("benchmark topic not found")
-	}
-	defer topic.Log.Close()
-
-	const producers = 100
+	producerConfigs := []int{1, 10, 50, 100}
 	const messagesPerProducer = 1000
 
-	msg := models.Message{
-		Key:       "benchmark",
-		Value:     "test-message",
-		Timestamp: time.Now().Unix(),
-	}
+	for _, producers := range producerConfigs {
+		t.Run(fmt.Sprintf("producers_%d", producers), func(t *testing.T) {
+			b := NewBroker(t.TempDir())
 
-	var wg sync.WaitGroup
-
-	start := time.Now()
-
-	for i := 0; i < producers; i++ {
-		wg.Add(1)
-
-		go func() {
-			defer wg.Done()
-
-			for j := 0; j < messagesPerProducer; j++ {
-				if !broker.Publish("benchmark", msg) {
-					t.Error("publish failed")
-				}
+			if err := b.CreateTopic("benchmark"); err != nil {
+				t.Fatal(err)
 			}
-		}()
-	}
+			defer b.Close()
 
-	wg.Wait()
+			topic, ok := b.GetTopic("benchmark")
+			if !ok {
+				t.Fatal("benchmark topic not found")
+			}
 
-	elapsed := time.Since(start)
+			msg := models.Message{
+				Key:       "benchmark",
+				Value:     "test-message",
+				Timestamp: time.Now().Unix(),
+			}
 
-	totalMessages := producers * messagesPerProducer
-	throughput := float64(totalMessages) / elapsed.Seconds()
+			totalMessages := producers * messagesPerProducer
 
-	t.Logf("Total messages: %d", totalMessages)
-	t.Logf("Total time: %v", elapsed)
-	t.Logf("Throughput: %.2f messages/sec", throughput)
+			var wg sync.WaitGroup
+			var failures atomic.Int64
 
-	if topic.Queue.Size() != totalMessages {
-		t.Errorf(
-			"expected %d messages in queue, got %d",
-			totalMessages,
-			topic.Queue.Size(),
-		)
+			start := time.Now()
+
+			for i := 0; i < producers; i++ {
+				wg.Add(1)
+
+				go func() {
+					defer wg.Done()
+
+					for j := 0; j < messagesPerProducer; j++ {
+						if !b.Publish("benchmark", msg) {
+							failures.Add(1)
+						}
+					}
+				}()
+			}
+
+			wg.Wait()
+
+			elapsed := time.Since(start)
+			throughput := float64(totalMessages) / elapsed.Seconds()
+
+			t.Logf("Producers: %d", producers)
+			t.Logf("Total messages: %d", totalMessages)
+			t.Logf("Execution time: %v", elapsed)
+			t.Logf("Throughput: %.2f messages/sec", throughput)
+			t.Logf("Failed publishes: %d", failures.Load())
+
+			if failures.Load() != 0 {
+				t.Fatalf("publish failures: %d", failures.Load())
+			}
+
+			if topic.Queue.Size() != totalMessages {
+				t.Errorf(
+					"expected %d messages, got %d",
+					totalMessages,
+					topic.Queue.Size(),
+				)
+			}
+		})
 	}
 }
