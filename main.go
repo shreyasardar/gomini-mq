@@ -19,8 +19,8 @@ func main() {
 	// Create broker
 	b := broker.NewBroker("data")
 
-	if err := b.CreateTopic("orders"); err != nil {
-		log.Fatal(err)
+	if err := b.Recover(); err != nil {
+		log.Fatalf("Failed to recover broker: %v", err)
 	}
 
 	// Create API server
@@ -35,6 +35,10 @@ func main() {
 
 	router.POST("/publish", server.PublishHandler)
 	router.GET("/consume", server.ConsumeHandler)
+
+	router.POST("/deliver", server.DeliverHandler)
+	router.POST("/ack", server.AckHandler)
+	router.POST("/nack", server.NackHandler)
 
 	// Create HTTP server
 	httpServer := &http.Server{
